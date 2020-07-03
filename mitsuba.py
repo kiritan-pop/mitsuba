@@ -61,7 +61,17 @@ def comb_movie(movie_files, out_path):
     out.release()
 
     # 動画と音声結合
-    command = f"ffmpeg -y -i tmp/video.mp4 -i tmp/audio_merged.wav -c:v copy -c:a aac -loglevel quiet out/{out_path}"
+    vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
+    cv = f"-c:v libx264"  #高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等
+    # ビットレートは解像度に応じて固定にしています。
+    if height == 1080: # FHD
+        bv = f"-b:v 11m"
+    elif height == 720: # HD
+        bv = f"-b:v 6m"
+    else: # VGA
+        bv = f"-b:v 3m"
+
+    command = f"ffmpeg -y -i tmp/video.mp4 -i tmp/audio_merged.wav {cv} {bv} {vf} -c:a aac -loglevel quiet out/{out_path}"
     subprocess.run(command, shell=True)
 
     # tmp 削除
