@@ -14,6 +14,9 @@ def comb_movie(movie_files, out_path):
     os.makedirs("tmp", exist_ok=True)
     os.makedirs("out", exist_ok=True)
 
+    if os.path.exists(os.path.join("out",out_path)):
+        return
+
     # 形式はmp4
     fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
 
@@ -62,7 +65,8 @@ def comb_movie(movie_files, out_path):
 
     # 動画と音声結合
     vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
-    cv = f"-c:v libx264"  #高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等
+    # 高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等 libx264
+    cv = f"-c:v h264_videotoolbox"
     # ビットレートは解像度に応じて固定にしています。
     if height == 1080: # FHD
         bv = f"-b:v 11m"
