@@ -21,7 +21,7 @@ def comb_movie(num,name_q):
             os.makedirs("out", exist_ok=True)
 
             if os.path.exists(os.path.join("out",out_path)):
-                return
+                continue
 
             # 形式はmp4
             fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
