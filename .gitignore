@@ -1,4 +1,5 @@
 .DS_Store
-tmp/*
-out/*
-in/*
+tmp/
+out/
+in/
+venv/

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import shutil
 import cv2
@@ -36,7 +37,7 @@ def comb_movie(movie_files, out_path, num):
                         (int(width), int(height)))
 
     audio_merged = None
-    for movies in tqdm(movie_files, desc=f"movie_{num:02}", position=num+1):
+    for movies in tqdm(movie_files, desc=f"P{num:02}:{out_path}", position=num+1):
         # 動画ファイルの読み込み，引数はビデオファイルのパス
         movie = cv2.VideoCapture(movies)
         count = movie.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -57,7 +58,7 @@ def comb_movie(movie_files, out_path, num):
         subprocess.run(command, shell=True)
 
         audio_tmp = AudioSegment.from_file(f"tmp/audio_{num:02}.wav", format="wav")
-        audio_tmp = audio_tmp[:-DUP_FRAME/fps*1000]
+        audio_tmp = audio_tmp[:int((count-DUP_FRAME)/fps*1000)]
 
         if audio_merged is None:
             audio_merged = audio_tmp
