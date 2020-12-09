@@ -13,13 +13,11 @@ from queue import Empty
 DUP_FRAME = 14
 
 # multi processing
-WORKERS = 6
+WORKERS = 2
 TIMEOUT = 10
 
 def comb_movie(movie_files, out_path, num):
-    os.makedirs("tmp", exist_ok=True)
-    os.makedirs("out", exist_ok=True)
-
+    # 作成済みならスキップ
     if os.path.exists(os.path.join("out",out_path)):
         return
 
@@ -37,7 +35,7 @@ def comb_movie(movie_files, out_path, num):
                         (int(width), int(height)))
 
     audio_merged = None
-    for movies in tqdm(movie_files, desc=f"P{num:02}:{out_path}", position=num+1):
+    for movies in movie_files:
         # 動画ファイルの読み込み，引数はビデオファイルのパス
         movie = cv2.VideoCapture(movies)
         count = movie.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -71,8 +69,8 @@ def comb_movie(movie_files, out_path, num):
 
     # 動画と音声結合
     vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
-    # 高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等 libx264, nvenc
-    cv = f"-c:v h264_nvenc"
+    # 高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等 libx264, h264_nvenc
+    cv = f"-c:v h264_videotoolbox"
     # ビットレートは解像度に応じて固定にしています。
     if height == 1080: # FHD
         bv = f"-b:v 11m"
@@ -90,6 +88,9 @@ def wrapper(args):
     comb_movie(*args)
 
 if __name__ == '__main__':
+    os.makedirs("./tmp", exist_ok=True)
+    os.makedirs("./out", exist_ok=True)
+
     # ディレクトリ内の動画を：フロント・リアカメラごと、撮影開始時間ごとにまとめる
     files_dict = defaultdict(list)
     for f in glob.glob("./in/*.MP4"):
@@ -100,8 +101,8 @@ if __name__ == '__main__':
         data.append((sorted(files_list), key_name+".mp4", i))
 
     p = Pool(WORKERS)
-    with tqdm(total=len(data),desc="total:",  position=0) as t:
+    with tqdm(total=len(data)) as t:
         for _ in p.imap_unordered(wrapper, data):
             t.update(1)
     # tmp 削除
-    shutil.rmtree('tmp/')
+    shutil.rmtree('./tmp/')
