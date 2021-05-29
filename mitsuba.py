@@ -6,21 +6,22 @@ import glob
 import subprocess
 from pydub import AudioSegment
 from collections import defaultdict
-from tqdm import tqdm, trange
-from multiprocessing import Pool,Process, Queue, TimeoutError
+from tqdm import tqdm
+from multiprocessing import Process, Queue
 from queue import Empty
 
 DUP_FRAME = 14
 DUP_AUDIO = 400 #ms
 
 # multi processing
-WORKERS = 3
-TIMEOUT = 10
+MERGE_WORKERS = 4
+ENCODE_WORKERS = 2
+TIMEOUT = 600
 
-def comb_movie(movie_files, out_path, num):
-    # 作成済みならスキップ
-    if os.path.exists(os.path.join("out",out_path)):
-        return
+def merge_movie(movie_files, key_name):
+    tmp_video_file = os.path.join("tmp", f"tmp_v_{key_name}.mp4")
+    tmp_audio_file_sub = os.path.join("tmp", f"tmp_a_{key_name}_sub.wav")
+    tmp_audio_file = os.path.join("tmp", f"tmp_a_{key_name}.wav")
 
     # 形式はmp4
     fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
@@ -32,7 +33,7 @@ def comb_movie(movie_files, out_path, num):
     width = movie.get(cv2.CAP_PROP_FRAME_WIDTH)
 
     # 出力先のファイルを開く
-    out = cv2.VideoWriter(f"tmp/video_{num:02}.mp4", int(fourcc), fps,
+    out = cv2.VideoWriter(tmp_video_file, int(fourcc), fps,
                         (int(width), int(height)))
 
     # audio_merged = None
@@ -56,10 +57,10 @@ def comb_movie(movie_files, out_path, num):
         else:
             [out.write(f) for f in frames[DUP_FRAME:]]
 
-        command = f"ffmpeg -y -i {movies} -vn -loglevel quiet tmp/audio_{num:02}.wav"
+        command = f"ffmpeg -y -i {movies} -vn -loglevel quiet {tmp_audio_file_sub}"
         subprocess.run(command, shell=True)
 
-        audio_tmp = AudioSegment.from_file(f"tmp/audio_{num:02}.wav", format="wav")
+        audio_tmp = AudioSegment.from_file(tmp_audio_file_sub, format="wav")
 
         if i == 0:
             audio_merged += audio_tmp
@@ -67,9 +68,16 @@ def comb_movie(movie_files, out_path, num):
             audio_merged += audio_tmp[DUP_AUDIO:]
 
     # 結合した音声書き出し
-    audio_merged.export(f"tmp/audio_merged_{num:02}.wav", format="wav")
+    audio_merged.export(tmp_audio_file, format="wav")
     out.release()
+    os.remove(tmp_audio_file_sub)
 
+    # print(f"mergeg {tmp_video_file}/{tmp_audio_file}")
+    return tmp_video_file, tmp_audio_file, key_name, fps, height, width
+
+
+def encode_movie(video_file, audio_file, key_name, fps, height, width):
+    filename = os.path.join("out", f"{key_name}.mp4")
     # 動画と音声結合
     vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
     # 高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等 libx264, h264_nvenc
@@ -83,16 +91,45 @@ def comb_movie(movie_files, out_path, num):
         bv = f"-b:v 1m"
 
     loglevel = "-loglevel quiet"
-    command = f"ffmpeg -y -i tmp/video_{num:02}.mp4 -i tmp/audio_merged_{num:02}.wav {cv} {bv} {vf} -c:a aac {loglevel} out/{out_path}"
+    command = f"ffmpeg -y -i {video_file} -i {audio_file} {cv} {bv} {vf} -c:a aac {loglevel} {filename}"
     subprocess.run(command, shell=True)
+    os.remove(video_file)
+    os.remove(audio_file)
+
+    # print(f"encoded {filename}")
+    return filename
 
 
-def wrapper(args):
-    comb_movie(*args)
+def merger(merge_q, encode_q):
+    try:
+        while True:
+            files_list, key_name, _ = merge_q.get(timeout=10)
+            encode_q.put((merge_movie(files_list, key_name)))
+    except Empty:
+        return
+
+def encoder(encode_q, t):
+    try:
+        while True:
+            tmp_video_file, tmp_audio_file, key_name, fps, height, width, * \
+                _ = encode_q.get(timeout=300)
+            encode_movie(tmp_video_file, tmp_audio_file,
+                         key_name, fps, height, width)
+            t.set_description(key_name)
+            t.update(1)
+    except Empty:
+        return
+
+
+# def wrapper(args):
+#     comb_movie(*args)
 
 if __name__ == '__main__':
     os.makedirs("./tmp", exist_ok=True)
     os.makedirs("./out", exist_ok=True)
+
+    merge_q = Queue()
+    encode_q = Queue(maxsize=100)
 
     # ディレクトリ内の動画を：フロント・リアカメラごと、撮影開始時間ごとにまとめる
     files_dict = defaultdict(list)
@@ -101,11 +138,24 @@ if __name__ == '__main__':
 
     data = []
     for i, (key_name, files_list) in enumerate(files_dict.items()):
-        data.append((sorted(files_list), key_name+".mp4", i))
+        if not os.path.exists(os.path.join("out", f"{key_name}.mp4")):
+            data.append((sorted(files_list), key_name, i))
 
-    p = Pool(WORKERS)
+    [merge_q.put(q) for q in data]
+
     with tqdm(total=len(data)) as t:
-        for _ in p.imap_unordered(wrapper, data):
-            t.update(1)
+        proc_merg = [Process(target=merger, args=(merge_q, encode_q)) for _ in range(MERGE_WORKERS)]
+        [p.start() for p in proc_merg]
+
+        proc_enc = [Process(target=encoder, args=(encode_q, t)) for _ in range(ENCODE_WORKERS)]
+        [p.start() for p in proc_enc]
+
+        [p.join() for p in proc_merg]
+        [p.join() for p in proc_enc]
+
+    # p = Pool(WORKERS)
+    # with tqdm(total=len(data)) as t:
+    #     for _ in p.imap_unordered(wrapper, data):
+    #         t.update(1)
     # tmp 削除
     shutil.rmtree('./tmp/')
