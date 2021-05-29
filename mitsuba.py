@@ -19,8 +19,12 @@ ENCODE_WORKERS = 1
 TIMEOUT = 600
 
 
+TMP_DIR = "tmp/" # "/media/kiritan/HDD/share/tmp/" 
+OUT_DIR = "out/" #"/media/kiritan/HDD/share/out/"
+
+
 def merge_video(movie_files, key_name, send_end):
-    tmp_video_file = os.path.join("tmp", f"tmp_v_{key_name}.mp4")
+    tmp_video_file = os.path.join(TMP_DIR, f"tmp_v_{key_name}.mp4")
 
     try:
         # 形式はmp4
@@ -34,7 +38,7 @@ def merge_video(movie_files, key_name, send_end):
 
         # 出力先のファイルを開く
         out = cv2.VideoWriter(tmp_video_file, int(fourcc), fps,
-                            (int(width), int(height)))
+                              (int(width), int(height)))
 
         for i, movies in enumerate(movie_files):
             # 動画ファイルの読み込み，引数はビデオファイルのパス
@@ -54,17 +58,17 @@ def merge_video(movie_files, key_name, send_end):
                 [out.write(f) for f in frames]
             else:
                 [out.write(f) for f in frames[DUP_FRAME:]]
-
     except Exception:
         pass
 
     out.release()
+
     send_end.send((tmp_video_file, height))
 
 
 def merge_audio(movie_files, key_name, send_end):
-    tmp_audio_file_sub = os.path.join("tmp", f"tmp_a_{key_name}_sub.wav")
-    tmp_audio_file = os.path.join("tmp", f"tmp_a_{key_name}.wav")
+    tmp_audio_file_sub = os.path.join(TMP_DIR, f"tmp_a_{key_name}_sub.wav")
+    tmp_audio_file = os.path.join(TMP_DIR, f"tmp_a_{key_name}.wav")
 
     audio_merged = AudioSegment.empty()
     for i, movies in enumerate(movie_files):
@@ -85,17 +89,17 @@ def merge_audio(movie_files, key_name, send_end):
 
 
 def encode_movie(key_name, video_file, height, audio_file):
-    filename = os.path.join("out", f"{key_name}.mp4")
+    filename = os.path.join(OUT_DIR, f"{key_name}.mp4")
     # 動画と音声結合
-    vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
+    vf = ""  # ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
     # 高速なエンコーダに対応していればお好みで 例）macなら h264_videotoolbox 等 libx264, h264_nvenc
     cv = f"-c:v h264_videotoolbox"
     # ビットレートは解像度に応じて固定にしています。
-    if height == 1080: # FHD
+    if height == 1080:  # FHD
         bv = f"-b:v 5m"
-    elif height == 720: # HD
+    elif height == 720:  # HD
         bv = f"-b:v 3m"
-    else: # VGA
+    else:  # VGA
         bv = f"-b:v 1m"
 
     loglevel = "-loglevel quiet"
@@ -135,22 +139,22 @@ def encoder(encode_q, tqdm_q):
             key_name, tmp_video_file, height, tmp_audio_file = encode_q.get(
                 timeout=1200)
             encode_movie(key_name, tmp_video_file, height, tmp_audio_file)
-            tqdm_q.put(True)
+            tqdm_q.put(key_name)
     except Empty:
         return
 
 
-def tqdm_proc(size):
+def progress(tqdm_q, size):
     with tqdm(total=size) as t:
         while True:
-            tqdm_q.get(timeout=1200)
-            t.set_description(key_name)
+            key_name = tqdm_q.get(timeout=1200)
+            t.set_description(f"{key_name} finished")
             t.update(1)
 
 
 if __name__ == '__main__':
-    os.makedirs("./tmp", exist_ok=True)
-    os.makedirs("./out", exist_ok=True)
+    os.makedirs(TMP_DIR, exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
 
     merge_q = Queue()
     encode_q = Queue(maxsize=100)
@@ -163,19 +167,23 @@ if __name__ == '__main__':
 
     data = []
     for i, (key_name, files_list) in enumerate(files_dict.items()):
-        if not os.path.exists(os.path.join("out", f"{key_name}.mp4")):
+        if not os.path.exists(os.path.join(OUT_DIR, f"{key_name}.mp4")):
             data.append((sorted(files_list), key_name, i))
 
     [merge_q.put(q) for q in data]
 
-    proc_merg = [Process(target=merger, args=(merge_q, encode_q)) for _ in range(MERGE_WORKERS)]
+    proc_merg = [Process(target=merger, args=(merge_q, encode_q))
+                    for _ in range(MERGE_WORKERS)]
     [p.start() for p in proc_merg]
 
     proc_enc = [Process(target=encoder, args=(encode_q, tqdm_q))
                 for _ in range(ENCODE_WORKERS)]
     [p.start() for p in proc_enc]
 
+    proc_tqdm = Process(target=progress, args=(tqdm_q, len(data)))
+    proc_tqdm.start()
+
     [p.join() for p in proc_merg]
     [p.join() for p in proc_enc]
-
-    shutil.rmtree('./tmp/')
+    proc_tqdm.join()
+    shutil.rmtree(TMP_DIR)
