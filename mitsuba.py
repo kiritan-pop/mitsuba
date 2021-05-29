@@ -11,7 +11,7 @@ from multiprocessing import Process, Queue, Pipe
 from queue import Empty
 
 DUP_FRAME = 14
-DUP_AUDIO = 400 #ms
+DUP_AUDIO = 500 #ms
 
 # multi processing
 MERGE_WORKERS = 2
