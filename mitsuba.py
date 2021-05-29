@@ -11,9 +11,10 @@ from multiprocessing import Pool,Process, Queue, TimeoutError
 from queue import Empty
 
 DUP_FRAME = 14
+DUP_AUDIO = 400 #ms
 
 # multi processing
-WORKERS = 2
+WORKERS = 3
 TIMEOUT = 10
 
 def comb_movie(movie_files, out_path, num):
@@ -34,8 +35,9 @@ def comb_movie(movie_files, out_path, num):
     out = cv2.VideoWriter(f"tmp/video_{num:02}.mp4", int(fourcc), fps,
                         (int(width), int(height)))
 
-    audio_merged = None
-    for movies in movie_files:
+    # audio_merged = None
+    audio_merged = AudioSegment.empty()
+    for i, movies in enumerate(movie_files):
         # 動画ファイルの読み込み，引数はビデオファイルのパス
         movie = cv2.VideoCapture(movies)
         count = movie.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -49,19 +51,20 @@ def comb_movie(movie_files, out_path, num):
                 frames.append(tmp_f)
 
         # 読み込んだフレームを書き込み
-        for frame in frames[:-DUP_FRAME]:
-            out.write(frame)
+        if i == 0:
+            [out.write(f) for f in frames]
+        else:
+            [out.write(f) for f in frames[DUP_FRAME:]]
 
         command = f"ffmpeg -y -i {movies} -vn -loglevel quiet tmp/audio_{num:02}.wav"
         subprocess.run(command, shell=True)
 
         audio_tmp = AudioSegment.from_file(f"tmp/audio_{num:02}.wav", format="wav")
-        audio_tmp = audio_tmp[:int((count-DUP_FRAME)/fps*1000)]
 
-        if audio_merged is None:
-            audio_merged = audio_tmp
-        else:
+        if i == 0:
             audio_merged += audio_tmp
+        else:
+            audio_merged += audio_tmp[DUP_AUDIO:]
 
     # 結合した音声書き出し
     audio_merged.export(f"tmp/audio_merged_{num:02}.wav", format="wav")
@@ -73,11 +76,11 @@ def comb_movie(movie_files, out_path, num):
     cv = f"-c:v h264_videotoolbox"
     # ビットレートは解像度に応じて固定にしています。
     if height == 1080: # FHD
-        bv = f"-b:v 11m"
+        bv = f"-b:v 5m"
     elif height == 720: # HD
-        bv = f"-b:v 6m"
-    else: # VGA
         bv = f"-b:v 3m"
+    else: # VGA
+        bv = f"-b:v 1m"
 
     loglevel = "-loglevel quiet"
     command = f"ffmpeg -y -i tmp/video_{num:02}.mp4 -i tmp/audio_merged_{num:02}.wav {cv} {bv} {vf} -c:a aac {loglevel} out/{out_path}"
