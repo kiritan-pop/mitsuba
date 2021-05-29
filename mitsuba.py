@@ -22,40 +22,43 @@ TIMEOUT = 600
 def merge_video(movie_files, key_name, send_end):
     tmp_video_file = os.path.join("tmp", f"tmp_v_{key_name}.mp4")
 
-    # 形式はmp4
-    fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+    try:
+        # 形式はmp4
+        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
 
-    #動画情報の取得
-    movie = cv2.VideoCapture(movie_files[0])
-    fps = movie.get(cv2.CAP_PROP_FPS)
-    height = movie.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    width = movie.get(cv2.CAP_PROP_FRAME_WIDTH)
+        #動画情報の取得
+        movie = cv2.VideoCapture(movie_files[0])
+        fps = movie.get(cv2.CAP_PROP_FPS)
+        height = movie.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        width = movie.get(cv2.CAP_PROP_FRAME_WIDTH)
 
-    # 出力先のファイルを開く
-    out = cv2.VideoWriter(tmp_video_file, int(fourcc), fps,
-                        (int(width), int(height)))
+        # 出力先のファイルを開く
+        out = cv2.VideoWriter(tmp_video_file, int(fourcc), fps,
+                            (int(width), int(height)))
 
-    for i, movies in enumerate(movie_files):
-        # 動画ファイルの読み込み，引数はビデオファイルのパス
-        movie = cv2.VideoCapture(movies)
-        count = movie.get(cv2.CAP_PROP_FRAME_COUNT)
-        frames = []
-        if movie.isOpened() == False:  # 正常に動画ファイルを読み込めたか確認
-            continue
+        for i, movies in enumerate(movie_files):
+            # 動画ファイルの読み込み，引数はビデオファイルのパス
+            movie = cv2.VideoCapture(movies)
+            count = movie.get(cv2.CAP_PROP_FRAME_COUNT)
+            frames = []
+            if movie.isOpened() == False:  # 正常に動画ファイルを読み込めたか確認
+                continue
 
-        for _ in range(int(count)):
-            ret, tmp_f = movie.read()  # read():1コマ分のキャプチャ画像データを読み込む
-            if ret:
-                frames.append(tmp_f)
+            for _ in range(int(count)):
+                ret, tmp_f = movie.read()  # read():1コマ分のキャプチャ画像データを読み込む
+                if ret:
+                    frames.append(tmp_f)
 
-        # 読み込んだフレームを書き込み
-        if i == 0:
-            [out.write(f) for f in frames]
-        else:
-            [out.write(f) for f in frames[DUP_FRAME:]]
+            # 読み込んだフレームを書き込み
+            if i == 0:
+                [out.write(f) for f in frames]
+            else:
+                [out.write(f) for f in frames[DUP_FRAME:]]
+
+    except Exception:
+        pass
 
     out.release()
-
     send_end.send((tmp_video_file, height))
 
 
@@ -125,16 +128,24 @@ def merger(merge_q, encode_q):
     except Empty:
         return
 
-def encoder(encode_q, t):
+
+def encoder(encode_q, tqdm_q):
     try:
         while True:
             key_name, tmp_video_file, height, tmp_audio_file = encode_q.get(
-                timeout=300)
+                timeout=1200)
             encode_movie(key_name, tmp_video_file, height, tmp_audio_file)
-            t.set_description(key_name)
-            t.update(1)
+            tqdm_q.put(True)
     except Empty:
         return
+
+
+def tqdm_proc(size):
+    with tqdm(total=size) as t:
+        while True:
+            tqdm_q.get(timeout=1200)
+            t.set_description(key_name)
+            t.update(1)
 
 
 if __name__ == '__main__':
@@ -143,6 +154,7 @@ if __name__ == '__main__':
 
     merge_q = Queue()
     encode_q = Queue(maxsize=100)
+    tqdm_q = Queue()
 
     # ディレクトリ内の動画を：フロント・リアカメラごと、撮影開始時間ごとにまとめる
     files_dict = defaultdict(list)
@@ -156,14 +168,14 @@ if __name__ == '__main__':
 
     [merge_q.put(q) for q in data]
 
-    with tqdm(total=len(data)) as t:
-        proc_merg = [Process(target=merger, args=(merge_q, encode_q)) for _ in range(MERGE_WORKERS)]
-        [p.start() for p in proc_merg]
+    proc_merg = [Process(target=merger, args=(merge_q, encode_q)) for _ in range(MERGE_WORKERS)]
+    [p.start() for p in proc_merg]
 
-        proc_enc = [Process(target=encoder, args=(encode_q, t)) for _ in range(ENCODE_WORKERS)]
-        [p.start() for p in proc_enc]
+    proc_enc = [Process(target=encoder, args=(encode_q, tqdm_q))
+                for _ in range(ENCODE_WORKERS)]
+    [p.start() for p in proc_enc]
 
-        [p.join() for p in proc_merg]
-        [p.join() for p in proc_enc]
+    [p.join() for p in proc_merg]
+    [p.join() for p in proc_enc]
 
     shutil.rmtree('./tmp/')
