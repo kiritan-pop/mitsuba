@@ -7,21 +7,20 @@ import subprocess
 from pydub import AudioSegment
 from collections import defaultdict
 from tqdm import tqdm
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Pipe
 from queue import Empty
 
 DUP_FRAME = 14
 DUP_AUDIO = 400 #ms
 
 # multi processing
-MERGE_WORKERS = 4
-ENCODE_WORKERS = 2
+MERGE_WORKERS = 2
+ENCODE_WORKERS = 1
 TIMEOUT = 600
 
-def merge_movie(movie_files, key_name):
+
+def merge_video(movie_files, key_name, send_end):
     tmp_video_file = os.path.join("tmp", f"tmp_v_{key_name}.mp4")
-    tmp_audio_file_sub = os.path.join("tmp", f"tmp_a_{key_name}_sub.wav")
-    tmp_audio_file = os.path.join("tmp", f"tmp_a_{key_name}.wav")
 
     # 形式はmp4
     fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
@@ -36,8 +35,6 @@ def merge_movie(movie_files, key_name):
     out = cv2.VideoWriter(tmp_video_file, int(fourcc), fps,
                         (int(width), int(height)))
 
-    # audio_merged = None
-    audio_merged = AudioSegment.empty()
     for i, movies in enumerate(movie_files):
         # 動画ファイルの読み込み，引数はビデオファイルのパス
         movie = cv2.VideoCapture(movies)
@@ -57,6 +54,17 @@ def merge_movie(movie_files, key_name):
         else:
             [out.write(f) for f in frames[DUP_FRAME:]]
 
+    out.release()
+
+    send_end.send((tmp_video_file, height))
+
+
+def merge_audio(movie_files, key_name, send_end):
+    tmp_audio_file_sub = os.path.join("tmp", f"tmp_a_{key_name}_sub.wav")
+    tmp_audio_file = os.path.join("tmp", f"tmp_a_{key_name}.wav")
+
+    audio_merged = AudioSegment.empty()
+    for i, movies in enumerate(movie_files):
         command = f"ffmpeg -y -i {movies} -vn -loglevel quiet {tmp_audio_file_sub}"
         subprocess.run(command, shell=True)
 
@@ -69,14 +77,11 @@ def merge_movie(movie_files, key_name):
 
     # 結合した音声書き出し
     audio_merged.export(tmp_audio_file, format="wav")
-    out.release()
     os.remove(tmp_audio_file_sub)
-
-    # print(f"mergeg {tmp_video_file}/{tmp_audio_file}")
-    return tmp_video_file, tmp_audio_file, key_name, fps, height, width
+    send_end.send(tmp_audio_file)
 
 
-def encode_movie(video_file, audio_file, key_name, fps, height, width):
+def encode_movie(key_name, video_file, height, audio_file):
     filename = os.path.join("out", f"{key_name}.mp4")
     # 動画と音声結合
     vf = ""  #ビデオフィルタはお好みで 例）ややソフト・彩度アップ・ノイズ除去の場合 "-vf smartblur=lr=1:ls=1:lt=0:cr=-0.9:cs=-2:ct=-31,eq=brightness=-0.06:saturation=1.4,hqdn3d,pp=ac"
@@ -96,7 +101,6 @@ def encode_movie(video_file, audio_file, key_name, fps, height, width):
     os.remove(video_file)
     os.remove(audio_file)
 
-    # print(f"encoded {filename}")
     return filename
 
 
@@ -104,25 +108,34 @@ def merger(merge_q, encode_q):
     try:
         while True:
             files_list, key_name, _ = merge_q.get(timeout=10)
-            encode_q.put((merge_movie(files_list, key_name)))
+            recv_end_v, send_end_v = Pipe(False)
+            recv_end_a, send_end_a = Pipe(False)
+            proc_v = Process(target=merge_video, args=(
+                files_list, key_name, send_end_v))
+            proc_a = Process(target=merge_audio, args=(
+                files_list, key_name, send_end_a))
+            proc_v.start()
+            proc_a.start()
+            proc_v.join()
+            proc_a.join()
+
+            tmp_video_file, height = recv_end_v.recv()
+            tmp_audio_file = recv_end_a.recv()
+            encode_q.put((key_name, tmp_video_file, height, tmp_audio_file))
     except Empty:
         return
 
 def encoder(encode_q, t):
     try:
         while True:
-            tmp_video_file, tmp_audio_file, key_name, fps, height, width, * \
-                _ = encode_q.get(timeout=300)
-            encode_movie(tmp_video_file, tmp_audio_file,
-                         key_name, fps, height, width)
+            key_name, tmp_video_file, height, tmp_audio_file = encode_q.get(
+                timeout=300)
+            encode_movie(key_name, tmp_video_file, height, tmp_audio_file)
             t.set_description(key_name)
             t.update(1)
     except Empty:
         return
 
-
-# def wrapper(args):
-#     comb_movie(*args)
 
 if __name__ == '__main__':
     os.makedirs("./tmp", exist_ok=True)
@@ -153,9 +166,4 @@ if __name__ == '__main__':
         [p.join() for p in proc_merg]
         [p.join() for p in proc_enc]
 
-    # p = Pool(WORKERS)
-    # with tqdm(total=len(data)) as t:
-    #     for _ in p.imap_unordered(wrapper, data):
-    #         t.update(1)
-    # tmp 削除
     shutil.rmtree('./tmp/')
