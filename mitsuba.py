@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import ctypes
 import os
 import shutil
 import cv2
@@ -8,7 +9,7 @@ import signal
 from pydub import AudioSegment
 from collections import defaultdict
 from tqdm import tqdm
-from multiprocessing import Process, Queue, Pipe
+from multiprocessing import Process, Queue, Value, Pipe
 from queue import Empty
 from logging import getLogger, StreamHandler, Formatter, FileHandler, getLevelName
 from config import *
@@ -106,7 +107,7 @@ def merge_audio(movie_files, key_name, send_end):
 
 
 def encode_movie(key_name, video_file, height, audio_file):
-    filename = os.path.join(OUT_DIR, f"{key_name}.mp4")
+    filename = os.path.join(TMP_DIR, f"{key_name}.mp4")
     # 動画と音声結合
     vf = VIDEO_FILTER  
     cv = f"-c:v {VIDEO_CODEC}"
@@ -124,53 +125,103 @@ def encode_movie(key_name, video_file, height, audio_file):
     os.remove(video_file)
     os.remove(audio_file)
 
-    return filename
 
-
-def merger(merge_q, encode_q):
-    while True:
-        files_list, key_name, _ = merge_q.get()
-        recv_end_v, send_end_v = Pipe(False)
-        recv_end_a, send_end_a = Pipe(False)
-        proc_v = Process(target=merge_video, args=(
-            files_list, key_name, send_end_v))
-        proc_a = Process(target=merge_audio, args=(
-            files_list, key_name, send_end_a))
-        proc_v.start()
-        proc_a.start()
-        proc_v.join()
-        proc_a.join()
-
-        tmp_video_file, height = recv_end_v.recv()
-        tmp_audio_file = recv_end_a.recv()
-        encode_q.put((key_name, tmp_video_file, height, tmp_audio_file))
-
-
-def encoder(encode_q, tqdm_q):
-    while True:
-        key_name, tmp_video_file, height, tmp_audio_file = encode_q.get()
-        encode_movie(key_name, tmp_video_file, height, tmp_audio_file)
-        tqdm_q.put(key_name)
-
-
-def progress(tqdm_q, size):
-    with tqdm(total=size) as t:
+def transfer(tran_q, merge_q, end_sw):
+    # ネットワーク越しなどの場合に一旦ローカルにコピーするための処理
+    while not end_sw.value:
         try:
-            while True:
-                key_name = tqdm_q.get(timeout=3600)
-                t.set_description(f"{key_name} finished")
-                t.update(1)
-        except Empty:
-            os.kill(os.getpid(), signal.SIGKILL)
+            files_list, key_name, _ = tran_q.get(timeout=30)
+            files_list_t = []
+            for f in files_list:
+                if INPUT_FILE_COPY:
+                    copy_to_path = os.path.join(TMP_DIR, f.split("/")[-1])
+                    if not os.path.exists(copy_to_path):
+                        shutil.copy(f, copy_to_path)
+                    files_list_t.append(copy_to_path)
+                else:
+                    files_list_t.append(f)
 
+            merge_q.put((files_list_t ,key_name))
+        except Empty:
+            continue
+
+
+def merger(merge_q, encode_q, end_sw):
+    while not end_sw.value:
+        try:
+            files_list, key_name = merge_q.get(timeout=30)
+            recv_end_v, send_end_v = Pipe(False)
+            recv_end_a, send_end_a = Pipe(False)
+            proc_v = Process(target=merge_video, args=(
+                files_list, key_name, send_end_v))
+            proc_a = Process(target=merge_audio, args=(
+                files_list, key_name, send_end_a))
+            proc_v.start()
+            proc_a.start()
+            proc_v.join()
+            proc_a.join()
+
+            if INPUT_FILE_COPY:
+                for f in files_list:
+                    os.remove(f)
+
+            tmp_video_file, height = recv_end_v.recv()
+            tmp_audio_file = recv_end_a.recv()
+            encode_q.put((key_name, tmp_video_file, height, tmp_audio_file))
+        except Empty:
+            continue
+
+def encoder(encode_q, tran2_q, end_sw):
+    while not end_sw.value:
+        try:
+            key_name, tmp_video_file, height, tmp_audio_file = encode_q.get(timeout=30)
+            encode_movie(key_name, tmp_video_file, height, tmp_audio_file)
+            tran2_q.put(key_name)
+        except Empty:
+            continue
+
+
+def transfer2(tran2_q, tqdm_q, end_sw):
+    while not end_sw.value:
+        try:
+            key_name = tran2_q.get(timeout=30)
+            copy_from_path = os.path.join(TMP_DIR, f"{key_name}.mp4")
+            copy_to_path = os.path.join(OUT_DIR, f"{key_name}.mp4")
+            try:
+                shutil.copy(copy_from_path, copy_to_path)
+                os.remove(copy_from_path)
+            except Exception as e:
+                logger.error(e)
+                continue
+
+            tqdm_q.put(key_name)
+        except Empty:
+            continue
+
+
+def progress(tqdm_q, size, pcnt, end_sw):
+    with tqdm(total=size) as t:
+        while size > pcnt.value:
+            key_name = tqdm_q.get()
+            t.set_description(f"{key_name} finished")
+            t.update(1)
+            pcnt.value += 1
+
+    end_sw.value = True
 
 if __name__ == '__main__':
     os.makedirs(TMP_DIR, exist_ok=True)
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    merge_q = Queue()
-    encode_q = Queue(maxsize=100)
+    tran_q = Queue()
+    merge_q = Queue(maxsize=MERGE_WORKERS*4)
+    encode_q = Queue(maxsize=ENCODE_WORKERS*4)
+    tran2_q = Queue()
     tqdm_q = Queue()
+    pcnt = Value(ctypes.c_int)
+    pcnt.value = 0
+    end_sw = Value(ctypes.c_bool)
+    end_sw.value = False
 
     # ディレクトリ内の動画を：フロント・リアカメラごと、撮影開始時間ごとにまとめる
     files_dict = defaultdict(list)
@@ -182,20 +233,27 @@ if __name__ == '__main__':
         if not os.path.exists(os.path.join(OUT_DIR, f"{key_name}.mp4")):
             data.append((sorted(files_list), key_name, i))
 
-    [merge_q.put(q) for q in data]
+    [tran_q.put(q) for q in data]
+    proc_tran = Process(target=transfer, args=(tran_q, merge_q, end_sw))
+    proc_tran.start()
 
-    proc_merg = [Process(target=merger, args=(merge_q, encode_q))
+    proc_merg = [Process(target=merger, args=(merge_q, encode_q, end_sw))
                  for _ in range(MERGE_WORKERS)]
     [p.start() for p in proc_merg]
 
-    proc_enc = [Process(target=encoder, args=(encode_q, tqdm_q))
+    proc_enc = [Process(target=encoder, args=(encode_q, tran2_q, end_sw))
                 for _ in range(ENCODE_WORKERS)]
     [p.start() for p in proc_enc]
 
-    proc_tqdm = Process(target=progress, args=(tqdm_q, len(data)))
+    proc_tran2 = Process(target=transfer2, args=(tran2_q, tqdm_q, end_sw))
+    proc_tran2.start()
+
+    proc_tqdm = Process(target=progress, args=(tqdm_q, len(data), pcnt, end_sw))
     proc_tqdm.start()
 
-    # [p.join() for p in proc_merg]
+    proc_tran.join()
+    [p.join() for p in proc_merg]
     [p.join() for p in proc_enc]
-    # proc_tqdm.join()
+    proc_tqdm.join()
+    proc_tran2.join()
     shutil.rmtree(TMP_DIR)

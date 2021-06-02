@@ -4,12 +4,16 @@
 # リネームして config.py として利用してください
 ####
 
+# 重複量（変更不要）
 DUP_FRAME = 14
-DUP_AUDIO = 500  # ms
+DUP_AUDIO = 461  # ms
 
-# multi processing
+# 並列実行数
 MERGE_WORKERS = 2
 ENCODE_WORKERS = 1
+
+# ファイルコピー（ネットワーク越しのファイルを変換する場合等）
+INPUT_FILE_COPY = False
 
 # dir
 TMP_DIR = "tmp/"
@@ -24,4 +28,4 @@ VIDEO_BR_2 = "3m" # 720p
 VIDEO_BR_3 = "1m" # 480p
 
 # log
-LOG_LEVEL = 'DEBUG'  # DEBUG,INFO,WARN,ERROR,CRITICAL
+LOG_LEVEL = 'INFO'  # DEBUG,INFO,WARN,ERROR,CRITICAL

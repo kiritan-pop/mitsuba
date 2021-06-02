@@ -6,3 +6,5 @@ venv/
 config.py
 __pycache__/
 error.log
+.python-version
+command.txt
