@@ -227,13 +227,13 @@ if __name__ == '__main__':
 
     # ディレクトリ内の動画を：フロント・リアカメラごと、撮影開始時間ごとにまとめる
     files_dict = defaultdict(list)
-    for f in glob.glob(os.path.join(IN_DIR, "*.MP4")):
+    for f in glob.glob(os.path.join(IN_DIR, "*", "*.MP4"), recursive=True):
         files_dict["_".join(f.split("/")[-1].split("_")[:2])].append(f)
 
     data = []
     for i, (key_name, files_list) in enumerate(files_dict.items()):
         if not os.path.exists(os.path.join(OUT_DIR, f"{key_name}.mp4")):
-            data.append((sorted(files_list), key_name, i))
+            data.append((sorted(files_list, key=lambda x:x.split("/")[-1]), key_name, i))
 
     [tran_q.put(q) for q in data]
     proc_tran = Process(target=transfer, args=(tran_q, merge_q, end_sw))
