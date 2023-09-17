@@ -2,6 +2,7 @@
 tmp/
 out/
 in/
+in_test/
 venv/
 config.py
 __pycache__/

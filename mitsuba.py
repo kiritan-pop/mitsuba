@@ -43,9 +43,9 @@ def merge_video(movie_files, key_name, send_end):
     debug_1 = ""
     try:
         # 形式はmp4
-        # fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+        fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
         # fourcc = cv2.VideoWriter_fourcc(*'hev1') #有効だけど、重いかも。
-        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        # fourcc = cv2.VideoWriter_fourcc(*'avc1')
 
         #動画情報の取得
         movie = cv2.VideoCapture(movie_files[0])
@@ -189,8 +189,7 @@ def transfer2(tran2_q, tqdm_q, end_sw):
             copy_from_path = os.path.join(TMP_DIR, f"{key_name}.mp4")
             copy_to_path = os.path.join(OUT_DIR, f"{key_name}.mp4")
             try:
-                shutil.copy(copy_from_path, copy_to_path)
-                os.remove(copy_from_path)
+                shutil.move(copy_from_path, copy_to_path)
             except Exception as e:
                 logger.error(e)
                 continue
